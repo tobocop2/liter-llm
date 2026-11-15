@@ -1,0 +1,118 @@
+name: Oldmac Wheels
+
+# Builds liter-llm wheels for macOS 11 and later, arm64 and x86_64, versioned
+# <upstream>+compat, and attaches them to a release of this fork. Every Mach-O
+# slice in each wheel is checked against the 11.0 floor before the release.
+# A push to oldmac (the weekly sync pushes it) builds without a release and
+# opens one issue when the build fails.
+
+on:
+  push:
+    branches: [oldmac]
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Attach the wheels to a release of this fork
+        type: boolean
+        default: true
+  workflow_call:
+    inputs:
+      publish:
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  wheels:
+    name: wheel (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, macos-15-intel]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Stamp the +compat version
+        id: stamp
+        run: python3 .github/scripts/compat_version.py
+
+      - name: Build wheels
+        uses: xberg-io/actions/build-python-wheels@v1
+        with:
+          python-version: "3.13"
+          package-dir: packages/python
+          cibw-build: "cp311-*"
+          upload-artifact: "false"
+          cibw-environment-macos: 'MATURIN_BUILD_ARGS="" CARGO_BUILD_LOCKED=true MACOSX_DEPLOYMENT_TARGET=11.0'
+
+      - name: Check the macOS floor of every slice
+        run: bash .github/scripts/check_minos.sh 11.0 wheelhouse/*.whl
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: oldmac-wheel-${{ matrix.os }}
+          path: wheelhouse/*.whl
+          if-no-files-found: error
+
+  release:
+    name: release
+    needs: wheels
+    if: ${{ inputs.publish }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      # The release tag points at a commit that changes workflow files, which the
+      # Actions token cannot tag. The deploy key creates the tag.
+      - uses: actions/checkout@v4
+        with:
+          ssh-key: ${{ secrets.SYNC_SSH_KEY }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: oldmac-wheel-*
+          merge-multiple: true
+          path: wheelhouse
+
+      - name: Create or update the fork release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          wheel="$(ls wheelhouse/*.whl | head -n 1)"
+          version="$(basename "$wheel" | cut -d- -f2)"
+          tag="v${version}"
+          if ! gh release view "$tag" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            git tag "$tag"
+            git push origin "$tag"
+            gh release create "$tag" -R "$GITHUB_REPOSITORY" --verify-tag \
+              --prerelease --title "$tag" \
+              --notes "liter-llm wheels for macOS 11 and later (arm64, x86_64), built from the oldmac branch."
+          fi
+          gh release upload "$tag" wheelhouse/*.whl -R "$GITHUB_REPOSITORY" --clobber
+
+  report:
+    name: report failure
+    needs: wheels
+    if: ${{ failure() && github.event_name == 'push' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: File an issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          existing=$(gh issue list -R "$GITHUB_REPOSITORY" --state open \
+            --search "oldmac wheel build failed in:title" --json number --jq length)
+          if [ "$existing" = "0" ]; then
+            gh issue create -R "$GITHUB_REPOSITORY" \
+              --title "oldmac wheel build failed" \
+              --body "The wheel build or the macOS floor check failed on oldmac. Failed run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          fi
