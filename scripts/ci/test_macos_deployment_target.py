@@ -16,20 +16,26 @@ WORKFLOWS = ROOT / ".github/workflows"
 RELEASE_FILES = (
     ".github/workflows/publish.yaml",
     ".github/workflows/python-wheels.yaml",
-    "mise-tasks/languages.toml",
 )
 
 
-def macos_minimum() -> str:
+OLDMAC_FLOOR = "11.0"
+
+
+def package_minimum() -> str:
     (major,) = re.findall(r"\.macOS\(\.v(\d+)\)", (ROOT / "Package.swift").read_text(encoding="utf-8"))
     return f"{major}.0"
+
+
+def macos_minimum() -> str:
+    return OLDMAC_FLOOR
 
 
 def workflow(name: str) -> dict:
     return yaml.safe_load((WORKFLOWS / name).read_text(encoding="utf-8"))
 
 
-def test_every_deployment_target_in_the_release_files_is_the_package_minimum() -> None:
+def test_every_deployment_target_in_the_release_files_is_the_oldmac_floor() -> None:
     found = {
         path: re.findall(r"MACOSX_DEPLOYMENT_TARGET\W+([0-9][0-9.]*)", (ROOT / path).read_text(encoding="utf-8"))
         for path in RELEASE_FILES
@@ -50,10 +56,10 @@ def test_swift_bundle_and_task_build_for_the_package_minimum() -> None:
     caller = workflow("prepare-swift-release.yaml")["jobs"]["swift"]["with"]
     assert "macos-deployment-target" not in caller
     with (ROOT / "mise-tasks/languages.toml").open("rb") as tasks:
-        assert tomllib.load(tasks)["swift:build"]["env"]["MACOSX_DEPLOYMENT_TARGET"] == macos_minimum()
+        assert tomllib.load(tasks)["swift:build"]["env"]["MACOSX_DEPLOYMENT_TARGET"] == package_minimum()
 
 
-def test_macos_wheels_build_and_are_tagged_for_the_package_minimum() -> None:
+def test_macos_wheels_build_and_are_tagged_for_the_oldmac_floor() -> None:
     job = workflow("python-wheels.yaml")["jobs"]["build"]
     build = next(step for step in job["steps"] if "build-python-wheels" in step.get("uses", ""))
     assert f"MACOSX_DEPLOYMENT_TARGET={macos_minimum()}" in build["with"]["cibw-environment-macos"].split()
@@ -68,4 +74,4 @@ def test_macos_wheels_build_and_are_tagged_for_the_package_minimum() -> None:
 def test_go_readme_states_the_package_minimum() -> None:
     for path in ("templates/readme/go.md", "packages/go/README.md"):
         text = (ROOT / path).read_text(encoding="utf-8")
-        assert re.findall(r"deployment target of ([0-9.]+[0-9])", text) == [macos_minimum()], path
+        assert re.findall(r"deployment target of ([0-9.]+[0-9])", text) == [package_minimum()], path
