@@ -98,8 +98,10 @@ jobs:
           if ! gh release view "$tag" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             git tag "$tag"
             git push origin "$tag"
+            flags=()
+            [ -z "${RELEASE_TAG}" ] || flags+=(--prerelease)
             gh release create "$tag" -R "$GITHUB_REPOSITORY" --verify-tag \
-              --prerelease --title "$tag" \
+              "${flags[@]}" --title "$tag" \
               --notes "liter-llm wheels for macOS 11 and later (arm64, x86_64), built from the oldmac branch."
           fi
           gh release upload "$tag" wheelhouse/*.whl -R "$GITHUB_REPOSITORY" --clobber
